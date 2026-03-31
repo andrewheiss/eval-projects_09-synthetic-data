@@ -10,3 +10,5 @@ images/*.svg
 *.docx
 
 /.quarto/
+
+/.luarc.json

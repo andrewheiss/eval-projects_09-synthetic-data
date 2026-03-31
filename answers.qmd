@@ -1,0 +1,538 @@
+---
+title: "Making synthetic data"
+subtitle: "Problem set 9 --- PMAP 8521, SEMESTER YEAR"
+author: "YOUR NAME HERE"  # Replace with your actual name
+date: "DATE GOES HERE"  # Replace with the date
+date-format: "long"
+format:
+  html:
+    toc: true
+    knitr:
+      opts_chunk: 
+        dev: "ragg_png"
+        dpi: 300
+        fig-align: "center"
+  typst:
+    toc: true
+    toc-title: Contents
+    output-file: PREFIX_eval-09-synthetic-data.pdf
+    pdf-standard: ua-1
+    callout-appearance: minimal
+    linkcolor: "#a52c60"
+    citecolor: "#a52c60"
+    filters:
+      - math-alt.lua
+    include-in-header: 
+      text: |
+        // TOC stuff
+        // Make the title centered and slightly smaller than a full heading
+        #show outline: it => {
+          show heading: it => align(center, text(size: 0.75em, it))
+          it
+        }
+    include-before-body: 
+      text: |
+        // Add a left border to blockquotes
+        #show quote: it => block(
+          stroke: (left: 3pt + rgb("#4dbbee")),
+          inset: (left: 1em, top: 0.75em, bottom: 0.75em, right: 0.5em),
+          above: 0.75em,
+          below: 1.5em,
+          width: 100%,
+          text(fill: rgb("#6E6E6E"), it.body)
+        )
+
+        // Keep track of previous heading levels
+        #let last-heading-level = state("last-heading-level", 0)
+
+        // Add page breaks before all level 1 headings
+        // Add page breaks before level 2 headings that don't come after level 1
+        #show heading: it => {
+          context {
+            let prev-level = last-heading-level.get()
+
+            if it.level == 1 {
+              pagebreak(weak: true)
+              last-heading-level.update(1)
+            } else if it.level == 2 {
+              //if prev-level != 1 {
+              //  pagebreak(weak: true)
+              //}
+              last-heading-level.update(2)
+            } else {
+              last-heading-level.update(it.level)
+            }
+          }
+          it
+        }
+  pdf:
+    toc: true
+  docx:
+    toc: true
+
+# To make the list of steps cross-referenceable, I'm hijacking the "definition" 
+# environment (see https://quarto.org/docs/authoring/cross-references.html#theorems-and-proofs)
+# This changes the "Definition" text to "Process"
+crossref:
+  def-title: "Process"
+  def-prefix: "Process"
+
+---
+
+```{r}
+#| label: extra-options
+#| include: false
+
+# Set some default figure settings
+knitr::opts_chunk$set(
+  fig.width = 6,
+  fig.asp = 0.618,
+  fig.align = "center",
+  fig.retina = 3,
+  out.width = "75%"
+)
+```
+
+# Overview
+
+Many MPA and MPP programs offer a brief math camp in the weeks before students begin their graduate degrees, with the hope that it will help students by more prepared in math-heavy classes like statistics and microeconomics. 
+
+You're interested in evaluating the effectiveness of a hypothetical math camp program. **Does attending math camp cause higher grades in statistics classes?**
+
+This program is not randomized and it's not mandatory---anyone can decide to sign up (or not!), which means you have selection bias and confounding to worry about.
+
+You don't have any data for this, but that's okay! You can simulate some data and set up the infrastructure for answering this question later with real data.
+
+```{r}
+#| label: setup
+#| warning: false
+#| message: false
+
+library(tidyverse)        # For ggplot, mutate(), filter(), and friends
+library(broom)            # For converting models to data frames
+library(ggdag)            # For drawing DAGs
+library(scales)           # For rescaling data with rescale()
+library(truncnorm)        # For truncated normal distributions
+library(parameters)       # For converting models to data frames
+library(modelsummary)     # For showing side-by-side regression tables
+library(marginaleffects)  # For nicer post-estimation work
+library(tinytable)        # For nice tables
+
+set.seed(1234)  # Make any random stuff be the same every time you run this
+
+# Turn off the message that happens when you use group_by() and summarize()
+options(dplyr.summarise.inform = FALSE)
+```
+
+# The general process
+
+At the [guide to example data](https://evalsp26.classes.andrewheiss.com/example/synthetic-data.html#specific-examples) at the course website, I provide this overview of the general steps involved in generating synthetic data:
+
+::: {#def-process}
+
+### How to generate synthetic data
+
+1. Draw a DAG that maps out how all the columns you care about are related.
+2. Specify how those nodes are measured.
+3. Specify the relationships between the nodes based on the DAG equations.
+4. Generate random columns that stand alone. Generate related columns using regression math. Consider adding random noise. This is an entirely trial and error process until you get numbers that look good. Rely *heavily* on plots as you try different coefficients and parameters. Optionally rescale any columns that go out of reasonable bounds. If you rescale, you'll need to tinker with the coefficients you used since the final effects will also get rescaled.
+5. Verify all relationships with plots and models.
+6. Try it out!
+7. Save the data.
+
+:::
+
+
+# Background details
+
+In this section, I provide you with the content for steps 1–3 in @def-process. In your final project, you'll have to do those steps yourself.
+
+## DAG
+
+> @def-process, step 1: Draw a DAG that maps out how all the columns you care about are related
+
+@fig-math-camp-dag shows a DAG with just four nodes. Students' GRE scores and undergraduate GPAs confound both the choice to enroll in math camp and final class grades. Additionally, undergraduate degrees help cause GRE scores.
+
+```{r}
+#| label: fig-math-camp-dag
+#| fig-cap: DAG showing the effect of math camp on final grades, confounded by GPA and GRE
+#| fig-alt: |
+#|   Directed acyclic graph with four nodes. Camp (the exposure) is on the
+#|   far left and grade (the outcome) is on the far right. GPA and GRE are
+#|   positioned in the middle row. Arrows point from GPA to GRE, from GPA
+#|   and GRE to both camp and grade, and from camp to grade. This layout
+#|   shows that GPA and GRE confound the relationship between math camp
+#|   attendance and final grades.
+
+math_camp_dag <- dagify(
+  grade ~ camp + gpa + gre,
+  camp ~ gpa + gre,
+  gre ~ gpa,
+  outcome = "grade",
+  exposure = "camp",
+  coords = list(
+    x = c(camp = 1, gpa = 2, gre = 3, grade = 4),
+    y = c(camp = 1, gpa = 2, gre = 2, grade = 1)
+  )
+)
+
+ggdag_status(math_camp_dag) +
+  theme_dag() +
+  guides(color = "none") # Turn off legend
+```
+
+
+## Node measurement
+
+> @def-process, step 2: Specify how those nodes are measured
+
+Here's how these columns are measured:
+
+- **GPA**: Scale from 1.5 to 4.0 with two decimals (i.e. values like 3.54 are fine). Mostly clustered around 3.5, plus or minus some amount that you decide. You'll either want to scale down whatever values you create with `rescale()`, or use `rtruncnorm()` to constrain the values within the plausible range.
+- **GRE**: Scale from 130 to 170 with no decimals (i.e. values like 145.32 are bad). Mostly clustered around 150, plus or minus some amount that you decide. You'll either want to scale down whatever values you create with `rescale()`, or use `rtruncnorm()` to constrain the values within the plausible range.
+- **Math camp**: Binary variable. Roughly 50% of students enroll in math camp.
+- **Final grade**: Final exam score in a student's statistics class. Scale from 0 to 100 with one decimal (i.e. values like 75.2 are fine), mostly clustered around 70 (it's a hard test), plus or minus some amount that you decide. Nobody really scores below 20, so you can set the minimum to 20 if you want with `rescale()`.
+
+
+## Node relationships
+
+> @def-process, step 3: Specify the relationships between the nodes based on the DAG equations
+
+In the DAG, there are three sets of relationships, or models:
+
+- **GPA is associated with GRE scores**: Every 1 point increase in GPA (i.e. moving from a 2.0 to a 3.0) increases GRE scores by 10, on average.
+- **Math camp is associated with undergraduate GPA and GRE scores**: Math camp here is a binary variable, so you can't say things like "every 1 point increase in GRE scores changes math camp by X". Instead, you'll want to do something similar to [the example for creating an effect for adjustment-based approaches](https://evalsp26.classes.andrewheiss.com/example/synthetic-data-ipw.html): create a column named `camp_score`, have GPA and GRE *decrease* that score (since people are less likely to enroll in math camp if they have higher GPAs and GRE scores), rescale that math camp score column to be between 0 and 1 to create a `camp_probability` column, and then randomly assign people to math camp based on those probabilities. I don't care what the size of the GPA and GRE effects are (since they'll be scaled down and binary-ized anyway)---just make it so that the probability of math camp goes down as GPA and GPA go up.
+- **Final grade is caused by math camp, undergraduate GPA, and GRE scores**: Every 1 point increase in GPA increases final test scores by 10 points, on average. Every 1 point increase in GRE scores increase final test scores by 0.5 points. *Participating in math camp causes a boost of 10 points.* That's the causal effect you're building in.
+
+
+# Task 1: Generate data
+
+> @def-process, step 4: Generate random columns that stand alone. Generate related columns using regression math. Consider adding random noise. This is an entirely trial and error process until you get numbers that look good. Rely heavily on plots as you try different coefficients and parameters. Optionally rescale any columns that go out of reasonable bounds. If you rescale, you'll need to tinker with the coefficients you used since the final effects will also get rescaled.
+
+Before trying to get these variables to be related to each other, it's a good idea to see what good plausible values might be. "Math camp" and "final grade" are endogenous and are determined by GPA and GRE, so they're harder to see on their own, but we can visualize plausible distributions for GPA and GRE.
+
+Generate and visualize some random values for both GPA and GRE. The values should match what's described above:
+
+- **GPA**: Scale from 1.5 to 4.0, mostly clustered around 3.5, plus or minus some amount that you decide
+- **GRE**: Scale from 130 to 170, mostly clustered around 150, plus or minus some amount that you decide
+
+::: {.callout-tip title="Answer"}
+@fig-dist-gpa and @fig-dist-gre are the results from my tinkering. Yours will be different.
+:::
+
+```{r}
+#| label: fig-dist-gpa
+#| fig-cap: Truncated normal distribution with mean of 3.5 and sd of 0.5
+#| fig-alt: |
+#|   Density plot of 2,000 simulated GPA values. The distribution is
+#|   roughly bell-shaped and bounded between 1.5 and 4.0, with most values
+#|   clustered near 3.5. The right tail is truncated at 4.0, producing a
+#|   slight left skew.
+
+example_gpa <- tibble(
+  gpa = rtruncnorm(2000, mean = 3.5, sd = 0.5, a = 1.5, b = 4)
+)
+
+# sd = 0.5 looks good, I guess
+ggplot(example_gpa, aes(x = gpa)) +
+  geom_density(fill = "#FF851B", color = NA) +
+  theme_minimal()
+```
+
+```{r}
+#| label: fig-dist-gre
+#| fig-cap: Truncated normal distribution with mean of 150 and sd of 10
+#| fig-alt: |
+#|   Density plot of 2,000 simulated GRE scores. The distribution is
+#|   roughly symmetric and bell-shaped, bounded between 130 and 170, with
+#|   most values clustered near 150. Both tails are truncated at the
+#|   boundaries.
+
+example_gre <- tibble(
+  gre = rtruncnorm(2000, mean = 150, sd = 10, a = 130, b = 170)
+)
+
+# sd = 10 looks fine
+ggplot(example_gre, aes(x = gre)) +
+  geom_density(fill = "#85144b", color = NA) +
+  theme_minimal()
+```
+
+Use all the relationships in @fig-math-camp-dag to generate data for 2500 students.
+
+You'll probably want to rescale columns so you don't end up with GPAs like 6.3, etc. Rescaling distorts the causal effects you build in, so you probably won't do something like `10 * camp`---it'll likely need to be higher.
+
+::: {.callout-tip title="Answer"}
+Here's what I did; yours will look different.
+:::
+
+```{r}
+#| label: create-data
+
+# Make this randomness consistent
+set.seed(1234)
+
+# Simulate 2500 students
+n_people <- 2500
+
+camp_data <- tibble(
+  # Exogenous variables first
+  # ID column
+  id = 1:n_people,
+  # GPA. Use the parameters I figured out earlier
+  gpa = rtruncnorm(n_people, mean = 3.5, sd = 0.5, a = 1.5, b = 4)
+) |>
+  # Endogenous variables next
+  # GRE increases 10 points for every increase in GPA
+  mutate(
+    gre_base = rtruncnorm(n_people, mean = 150, sd = 10, a = 130, b = 170),
+    # This could just be gpa * 10, but to make the boost a little more random
+    # (i.e. some people increase by 15 per GPA point, others by 3), 
+    # we do gpa * rnorm(mean = 10)
+    gre_boost = gpa * rnorm(n_people, mean = 10, sd = 1),
+    # Add the GPA effect to the baseline GRE score
+    gre = gre_base + gre_boost,
+    # Now the scale is too high, with values exceeding 200. Rescale it back down
+    gre = rescale(gre, to = c(130, 170))
+  ) |>
+  # Math camp probability decreases as GPA and GRE increase. Since this math camp
+  # score we're inventing is meaningless, we'll just say it starts on at 50ish ± 15
+  mutate(
+    camp_score_base = rnorm(n_people, mean = 50, sd = 7),
+    # Score goes down by 2ish points for every 1 point increase in GRE score
+    camp_score_gre_boost = gre * rnorm(n_people, mean = -2, sd = 0.01),
+    # Score goes down by 5ish points for every 1 point increase in GPA
+    camp_score_gpa_boost = gpa * rnorm(n_people, mean = -5, sd = 0.5),
+    # Combine all these effects
+    camp_score = camp_score_base + camp_score_gre_boost + camp_score_gpa_boost,
+    # Rescale so it's a probability between 5 and 95%
+    camp_probability = rescale(camp_score, to = c(0.05, 0.95)),
+    # Sort people to math camp using a binomial draw with calculated probability
+    camp = rbinom(n_people, size = 1, prob = camp_probability)
+  ) |>
+  # Finally make the final grade column based on GPA, GRE, camp, and noise
+  # General score centered around 70 (7 / 7+3)
+  mutate(
+    grade_base = rbeta(n_people, shape1 = 7, shape2 = 3) * 100,
+    # Camp boosts grades by 10; GPA boosts grades by 10; GRE boosts grades by 0.5
+    # BUT because of resacling, these need to be bigger here
+    grade_effect = (18.4 * camp) + (18 * gpa) + (0.8 * gre),
+    grade = grade_base + grade_effect + rnorm(n_people, mean = 0, sd = 5),
+    # Scale back to 20-100
+    grade = rescale(grade, to = c(20, 100))
+  ) |>
+  # Round things so they're more realistic
+  mutate(gpa = round(gpa, 2), gre = round(gre, 0), grade = round(grade, 1))
+```
+
+
+# Task 2: Verify relationships
+
+> @def-process, step 5: Verify all relationships with plots and models
+
+Make sure the relationships look good. GPA and GRE should be related to each other. Higher values of GPA and GRE should decrease the likelihood of math camp. GPA, GRE, and math camp should all be positively related with final grades.
+
+Insert as many chunks as you need to here.
+
+::: {.callout-tip title="Answer"}
+Everything below is the answer for this section.
+:::
+
+@fig-gre-gpa-relationship shows that GRE and GPA are related, and we can confirm that with a model in @tbl-gre-gpa-camp-checks. In this case, a 1-unit increase in GPA is associated with a 6.3-point increase in GRE score, on average. That's not the same as the 10-point boost that we built in, but that's because we rescaled the generated GRE scores back into the 130–170 point range, which shrunk the effect a little.
+
+```{r}
+#| label: fig-gre-gpa-relationship
+#| message: false
+#| fig-alt: |
+#|   Scatter chart of 2,500 simulated students with undergraduate GPA on
+#|   the x-axis and GRE score on the y-axis. A linear regression line with
+#|   a shaded confidence band trends upward from left to right, confirming
+#|   a positive association. A one-unit increase in GPA corresponds to
+#|   approximately a 6.3-point increase in GRE score on average.
+
+ggplot(camp_data, aes(x = gpa, y = gre)) +
+  geom_point() +
+  geom_smooth(method = "lm")
+```
+
+@fig-check-camp-gre-gpa both show that GRE and GPA each reduce probability of attending the camp. A 1-point increase in GPA reduces the probability by 6 percentage points, on average, and a 1-point increase in GRE scores reduces the probability by 2 percentage points. Everything seems to be going in the right direction.
+
+```{r}
+#| label: fig-check-camp-gre-gpa
+#| fig-cap: Distribution of GRE scores and GPAs across camp attendance
+#| fig-alt: |
+#|   Two side-by-side density plots. The left panel shows overlapping
+#|   distributions of GRE scores for camp attendees and non-attendees; the
+#|   non-attendee distribution is shifted toward higher GRE scores. The
+#|   right panel shows the same comparison for GPA, with non-attendees
+#|   again concentrated at higher values. Together, the panels confirm
+#|   that students with stronger academic backgrounds were less likely to
+#|   enroll in math camp.
+
+library(patchwork)
+
+p1 <- ggplot(camp_data, aes(x = gre, fill = as.factor(camp))) +
+  geom_density(alpha = 0.8)
+
+p2 <- ggplot(camp_data, aes(x = gpa, fill = as.factor(camp))) +
+  geom_density(alpha = 0.8)
+
+(p1 | p2) + 
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom")
+```
+
+```{r}
+#| label: tbl-gre-gpa-camp-checks
+#| tbl-cap: Results from models checking relationships between confounders and outcome
+
+model_gre_gpa_check <- lm(gre ~ gpa, data = camp_data)
+
+model_camp_gre_gpa_check <- glm(
+  camp ~ gre + gpa,
+  data = camp_data,
+  family = binomial(link = "logit")
+)
+
+rows <- tribble(
+  ~term               , ~col1        , ~col2      , ~col3        , ~col4               ,
+  "Coefficient scale" , "GRE points" , "Log odds" , "Odds ratio" , "Percentage points"
+)
+
+attr(rows, 'position') <- 1
+
+tbl <- modelsummary(
+  list(
+    model_gre_gpa_check,
+    model_camp_gre_gpa_check,
+    model_camp_gre_gpa_check,
+    avg_slopes(model_camp_gre_gpa_check)
+  ),
+  coef_omit = 1,
+  gof_map = c("nobs", "r.squared", "adj.r.squared", "F"),
+  stars = TRUE,
+  fmt = 2,
+  exponentiate = c(FALSE, FALSE, TRUE, FALSE),
+  add_rows = rows
+) |>
+  group_tt(
+    j = list(
+      "Outcome: GRE score" = 2,
+      "Outcome: Camp probability" = 3:5
+    )
+  ) |>
+  style_tt(i = 1:9, j = 3, line = "l") |>
+  style_tt(i = 1, line = "b")
+
+tbl@notes <- list(
+  "a" = list(i = 0, j = 4, text = "Odds ratios are the exponentiated log odds, or $e^\\beta$"),
+  "b" = list(i = 0, j = 5, text = "Percentage points here are calculated as average marginal effects using `avg_slopes()` from {marginaleffects}")
+)
+
+tbl |> 
+  format_tt("notes", markdown = TRUE)
+```
+
+
+# Task 3: Try it out!
+
+> @def-process, step 6: Try it out!
+
+See if you can find the effect. Run two models:
+
+- `grade ~ camp`: This is the naive, unadjusted, correlation-is-not-causation estimate. It's wrong.
+- `grade ~ camp + gpa + gre`: This is the adjusted estimate. Backdoors have been closed and the coefficient for `camp` should be the causal effect. It should be around 10.
+- (If you want to be super cool, adjust for GPA and GRE with inverse probability weighting too to see if the ATE for `camp` still holds. This is entirely optional.)
+- Include the results of the models in a side-by-side regression table
+
+Insert as many chunks as you need to here.
+
+::: {.callout-tip title="Answer"}
+Everything below is the answer for this section.
+:::
+
+Here's the unadjusted model:
+
+```{r}
+#| label: model-wrong
+
+model_bad <- lm(grade ~ camp, data = camp_data)
+
+model_parameters(model_bad, verbose = FALSE)
+```
+
+This says that math camp boosts final test scores by 7 points, but that's wrong because of backdoor confounding. Since high-GPA/GRE students avoid the camp and earn higher grades anyway, the naive estimate is biased downward, so it looks like the math camp program is less effective than it actually is.
+
+Here's a basic adjusted model, controlling for GPA and GRE, since they're confounders:
+
+```{r}
+#| label: model-right
+
+model_better <- lm(grade ~ camp + gpa + gre, data = camp_data)
+
+model_parameters(model_better, verbose = FALSE)
+```
+
+Cool cool. Participating in the camp *causes* an increase of 10.15 points, while a one-point increase in GPA is associated with a 9.7-point increase in exam score and a one-point increase in GRE score is associated with a 0.48-point increase in exam score. (But remember don't put too much stock in those control variable coefficients! <https://arxiv.org/abs/2005.10314>).
+
+Here's the same effect found by adjusting with inverse probability weighting, just for fun:
+
+```{r}
+#| label: model-ipw
+model_predict_camp <- glm(
+  camp ~ gpa + gre,
+  family = binomial(link = "logit"),
+  data = camp_data
+)
+
+camp_with_ipw <- predictions(model_predict_camp, camp_data) |>
+  rename(p_score = estimate) |>
+  mutate(ipw = (camp / p_score) + ((1 - camp) / (1 - p_score)))
+
+model_ipw <- lm(grade ~ camp, data = camp_with_ipw, weights = ipw)
+model_parameters(model_ipw, verbose = FALSE)
+```
+
+It works! Math camp *causes* a 10.18 point increase in final exam scores, on average. It still honestly blows my mind every time IPW works like this.
+
+Finally, just for fun, @tbl-all-models shows all three models together.
+
+```{r}
+#| label: tbl-all-models
+
+modelsummary(
+  list(
+    "Unadjusted" = model_bad,
+    "Adjusted with controls" = model_better,
+    "Adjusted with IPW" = model_ipw
+  ),
+  gof_map = c("nobs", "r.squared", "adj.r.squared", "F"),
+  stars = TRUE,
+  fmt = 2,
+) |>
+  style_tt(i = 3, background = "yellow", bold = TRUE)
+```
+
+
+# Task 4: Save the data
+
+> @def-process, step 7: Save the data
+
+Make a version of your fake data that removes all the intermediate columns you made. Save the final clean data as a CSV file with `write_csv()`.
+
+Insert a chunk here to do that.
+
+::: {.callout-tip title="Answer"}
+
+It works, so we'll just keep the columns we care about and save it:
+
+```{r}
+#| label: save-data
+
+camp_data_clean <- camp_data |> 
+  select(id, camp, grade, gpa, gre)
+
+write_csv(camp_data_clean, "data/math_camp_data.csv")
+```
+
+:::
