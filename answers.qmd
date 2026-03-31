@@ -4,6 +4,8 @@ subtitle: "Problem set 9 --- PMAP 8521, SEMESTER YEAR"
 author: "YOUR NAME HERE"  # Replace with your actual name
 date: "DATE GOES HERE"  # Replace with the date
 date-format: "long"
+bibliography: references.bib
+link-citations: true
 format:
   html:
     toc: true
@@ -15,6 +17,7 @@ format:
   typst:
     toc: true
     toc-title: Contents
+    citeproc: true
     output-file: PREFIX_eval-09-synthetic-data.pdf
     pdf-standard: ua-1
     callout-appearance: minimal
@@ -473,7 +476,7 @@ model_better <- lm(grade ~ camp + gpa + gre, data = camp_data)
 model_parameters(model_better, verbose = FALSE)
 ```
 
-Cool cool. Participating in the camp *causes* an increase of 10.15 points, while a one-point increase in GPA is associated with a 9.7-point increase in exam score and a one-point increase in GRE score is associated with a 0.48-point increase in exam score. (But remember don't put too much stock in those control variable coefficients! <https://arxiv.org/abs/2005.10314>).
+Cool cool. Participating in the camp *causes* an increase of 10.15 points, while a one-point increase in GPA is associated with a 9.7-point increase in exam score and a one-point increase in GRE score is associated with a 0.48-point increase in exam score. But remember to not put too much stock in those control variable coefficients [@HunermundLouw:2025]!
 
 Here's the same effect found by adjusting with inverse probability weighting, just for fun:
 
@@ -536,3 +539,6 @@ write_csv(camp_data_clean, "data/math_camp_data.csv")
 ```
 
 :::
+
+
+# References
