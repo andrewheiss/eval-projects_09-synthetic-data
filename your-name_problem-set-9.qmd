@@ -7,18 +7,22 @@ date-format: "long"
 format:
   html:
     toc: true
+  typst:
+    toc: true
   pdf:
     toc: true
   docx:
     toc: true
 
-# To make the list of steps cross-referenceable, I'm hijacking the "remark" 
+# To make the list of steps cross-referenceable, I'm hijacking the "definition" 
 # environment (see https://quarto.org/docs/authoring/cross-references.html#theorems-and-proofs)
-# This changes the "Remark" text to "Process"
-language:
-  environment-remark-title: "Process"
-  crossref-rem-prefix: "Process"
+# This changes the "Definition" text to "Process"
+crossref:
+  def-title: "Process"
+  def-prefix: "Process"
 ---
+
+# Overview
 
 Many MPA and MPP programs offer a brief math camp in the weeks before students begin their graduate degrees, with the hope that it will help students by more prepared in math-heavy classes like statistics and microeconomics. 
 
@@ -33,11 +37,15 @@ You don't have any data for this, but that's okay! You can simulate some data an
 #| warning: false
 #| message: false
 
-library(tidyverse)  # For ggplot, mutate(), filter(), and friends
-library(broom)      # For converting models to data frames
-library(ggdag)      # For drawing DAGs
-library(scales)     # For rescaling data with rescale()
-library(truncnorm)  # For truncated normal distributions
+library(tidyverse)        # For ggplot, mutate(), filter(), and friends
+library(broom)            # For converting models to data frames
+library(ggdag)            # For drawing DAGs
+library(scales)           # For rescaling data with rescale()
+library(truncnorm)        # For truncated normal distributions
+library(parameters)       # For converting models to data frames
+library(modelsummary)     # For showing side-by-side regression tables
+library(marginaleffects)  # For nicer post-estimation work
+library(tinytable)        # For nice tables
 
 set.seed(1234)  # Make any random stuff be the same every time you run this
 
@@ -47,9 +55,9 @@ options(dplyr.summarise.inform = FALSE)
 
 # The general process
 
-At the [guide to example data](https://evalsp26.classes.andrewheiss.com/example/synthetic-data.html#specific-examples) at the course website, I provide this overview (see @rem-process) of the general steps involved in generating synthetic data:
+At the [guide to example data](https://evalsp26.classes.andrewheiss.com/example/synthetic-data.html#specific-examples) at the course website, I provide this overview of the general steps involved in generating synthetic data:
 
-::: {#rem-process}
+::: {#def-process}
 
 ### How to generate synthetic data
 
@@ -66,21 +74,24 @@ At the [guide to example data](https://evalsp26.classes.andrewheiss.com/example/
 
 # Background details
 
-In this section, I provide you with the content for steps 1–3 in @rem-process. In your final project, you'll have to do those steps yourself.
+In this section, I provide you with the content for steps 1–3 in @def-process. In your final project, you'll have to do those steps yourself.
 
 ## DAG
 
-> @rem-process, step 1: Draw a DAG that maps out how all the columns you care about are related
+> @def-process, step 1: Draw a DAG that maps out how all the columns you care about are related
 
 @fig-math-camp-dag shows a DAG with just four nodes. Students' GRE scores and undergraduate GPAs confound both the choice to enroll in math camp and final class grades. Additionally, undergraduate degrees help cause GRE scores.
 
 ```{r}
 #| label: fig-math-camp-dag
 #| fig-cap: DAG showing the effect of math camp on final grades, confounded by GPA and GRE
-#| fig-width: 6
-#| fig-height: 4
-#| fig-align: "center"
-#| out-width: 70%
+#| fig-alt: |
+#|   Directed acyclic graph with four nodes. Camp (the exposure) is on the
+#|   far left and grade (the outcome) is on the far right. GPA and GRE are
+#|   positioned in the middle row. Arrows point from GPA to GRE, from GPA
+#|   and GRE to both camp and grade, and from camp to grade. This layout
+#|   shows that GPA and GRE confound the relationship between math camp
+#|   attendance and final grades.
 
 math_camp_dag <- dagify(
   grade ~ camp + gpa + gre,
@@ -100,18 +111,21 @@ ggdag_status(math_camp_dag) +
 ```
 
 
-## Node measurement and relationships
+## Node measurement
 
-> @rem-process, step 2: Specify how those nodes are measured
+> @def-process, step 2: Specify how those nodes are measured
 
 Here's how these columns are measured:
 
 - **GPA**: Scale from 1.5 to 4.0 with two decimals (i.e. values like 3.54 are fine). Mostly clustered around 3.5, plus or minus some amount that you decide. You'll either want to scale down whatever values you create with `rescale()`, or use `rtruncnorm()` to constrain the values within the plausible range.
 - **GRE**: Scale from 130 to 170 with no decimals (i.e. values like 145.32 are bad). Mostly clustered around 150, plus or minus some amount that you decide. You'll either want to scale down whatever values you create with `rescale()`, or use `rtruncnorm()` to constrain the values within the plausible range.
 - **Math camp**: Binary variable. Roughly 50% of students enroll in math camp.
-- **Final grade**: Final exam score in a student's statistics class. Scale from 0 to 100 with one decimal (i.e. values like 75.2 are fine), mostly clustered around 70 (it's a hard test), plus or minus some amount that you decide.
+- **Final grade**: Final exam score in a student's statistics class. Scale from 0 to 100 with one decimal (i.e. values like 75.2 are fine), mostly clustered around 70 (it's a hard test), plus or minus some amount that you decide. Nobody really scores below 20, so you can set the minimum to 20 if you want with `rescale()`.
 
-> @rem-process, step 3: Specify the relationships between the nodes based on the DAG equations
+
+## Node relationships
+
+> @def-process, step 3: Specify the relationships between the nodes based on the DAG equations
 
 In the DAG, there are three sets of relationships, or models:
 
@@ -124,7 +138,20 @@ In the DAG, there are three sets of relationships, or models:
 
 > @rem-process, step 4: Generate random columns that stand alone. Generate related columns using regression math. Consider adding random noise. This is an entirely trial and error process until you get numbers that look good. Rely heavily on plots as you try different coefficients and parameters. Optionally rescale any columns that go out of reasonable bounds. If you rescale, you'll need to tinker with the coefficients you used since the final effects will also get rescaled.
 
-Generate data for 2500 students.
+Before trying to get these variables to be related to each other, it's a good idea to see what good plausible values might be. "Math camp" and "final grade" are endogenous and are determined by GPA and GRE, so they're harder to see on their own, but we can visualize plausible distributions for GPA and GRE.
+
+Generate and visualize some random values for both GPA and GRE. The values should match what's described above:
+
+- **GPA**: Scale from 1.5 to 4.0, mostly clustered around 3.5, plus or minus some amount that you decide
+- **GRE**: Scale from 130 to 170, mostly clustered around 150, plus or minus some amount that you decide
+
+```{r}
+#| label: check-general-distributions-gpa-gre
+
+# Do stuff here
+```
+
+Use all the relationships in @fig-math-camp-dag to generate data for 2500 students.
 
 You'll probably want to rescale columns so you don't end up with GPAs like 6.3, etc. Rescaling distorts the causal effects you build in, so you probably won't do something like `10 * camp`---it'll likely need to be higher.
 
@@ -137,7 +164,7 @@ You'll probably want to rescale columns so you don't end up with GPAs like 6.3, 
 
 # Task 2: Verify relationships
 
-> @rem-process, step 5: Verify all relationships with plots and models
+> @def-process, step 5: Verify all relationships with plots and models
 
 Make sure the relationships look good. GPA and GRE should be related to each other. Higher values of GPA and GRE should decrease the likelihood of math camp. GPA, GRE, and math camp should all be positively related with final grades.
 
@@ -146,7 +173,7 @@ Insert as many chunks as you need to here.
 
 ## Task 3: Try it out!
 
-> @rem-process, step 6: Try it out!
+> @def-process, step 6: Try it out!
 
 See if you can find the effect. Run two models:
 
@@ -160,7 +187,7 @@ Insert as many chunks as you need to here.
 
 ## Task 4: Save the data
 
-> @rem-process, step 7: Save the data
+> @def-process, step 7: Save the data
 
 Make a version of your fake data that removes all the intermediate columns you made. Save the final clean data as a CSV file with `write_csv()`.
 
