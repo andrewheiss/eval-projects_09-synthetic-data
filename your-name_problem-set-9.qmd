@@ -1,8 +1,8 @@
 ---
 title: "Making fake data"
-subtitle: "Problem set 9 --- PMAP 8521, Spring 2025"
-author: "YOUR NAME HERE"
-date: "DATE GOES HERE"
+subtitle: "Problem set 8 --- PMAP 8521, SEMESTER YEAR"
+author: "YOUR NAME HERE"  # Replace with your actual name
+date: "DATE GOES HERE"  # Replace with the date
 date-format: "long"
 format:
   html:
